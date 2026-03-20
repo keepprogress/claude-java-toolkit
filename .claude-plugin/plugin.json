@@ -1,6 +1,6 @@
 {
-  "name": "crp-claude-tools",
-  "description": "CRP project development tools — lint gate, commit helpers, and code review utilities for Java 8 / Spring Boot / Oracle projects",
+  "name": "claude-java-toolkit",
+  "description": "Development tools for Java / Spring Boot / Maven projects — lint gate, code quality checks, and CI alignment utilities",
   "version": "0.1.0",
   "author": {
     "name": "T3261"
