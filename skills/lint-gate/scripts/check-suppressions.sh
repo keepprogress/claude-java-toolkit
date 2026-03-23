@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 # check-suppressions.sh — grep 版 LintSuppressionGuardTest（PMD 自指悖論補完）
-# 用法: bash check-suppressions.sh <module> [project_root]
+# 用法: bash check-suppressions.sh <module> [project_root] [filelist]
 # 結束碼: 0=pass, 1=violations found
+#
+# filelist: 可選的檔案清單路徑。
+#   - 提供時 = 增量模式：只掃清單內的檔案（不比對 allowlist）
+#   - 不提供 + allowlist 存在 = 全量模式：掃全模組，比對 allowlist 計數
+#   - 不提供 + allowlist 不存在 = 跳過 Check 1，只做 Check 2/3 全掃
 #
 # 本腳本檢查 PMD XPath 無法覆蓋的 3 項（自指悖論 + comment 限制）：
 #   1. CPD-OFF / NOPMD → 比對 allowlist 計數（對齊 Java test 的 line.contains 語意）
@@ -24,6 +29,7 @@ fi
 
 MODULE="$1"
 PROJECT_ROOT="${2:-.}"
+FILELIST="${3:-}"
 
 # [R2#3] 路徑正規化：cd + pwd 確保 MINGW64 路徑無冒號
 PROJECT_ROOT="$(cd "$PROJECT_ROOT" && pwd)"
@@ -36,18 +42,44 @@ if [[ ! -d "$SRC_DIR" ]]; then
     exit 1
 fi
 
+# 增量模式：檔案清單為空 → 無需檢查
+if [[ -n "$FILELIST" && ! -s "$FILELIST" ]]; then
+    echo "Suppression guard: SKIP (no changed files)"
+    exit 0
+fi
+
+# 決定掃描範圍
+INCREMENTAL=0
+if [[ -n "$FILELIST" ]]; then
+    INCREMENTAL=1
+    echo "Suppression guard: incremental mode ($(wc -l < "$FILELIST") changed files)"
+else
+    echo "Suppression guard: full scan"
+fi
+
 violations=()
 
 # ------------------------------------------------------------------
-# Check 1: CPD-OFF / NOPMD — count must match allowlist
-# [R6#1] 不加 // 前綴，對齊 Java test 的 line.contains() 語意
-#        （block comment /* CPD-OFF */ 也要算進去）
-# [R6#4] 用 grep -rl + grep -c 分離，避免 IFS=: 在含冒號路徑上斷裂
+# Check 1: CPD-OFF / NOPMD
+# 增量模式 → 只掃變更檔案，發現即報告（不比對 allowlist）
+# 全量模式 + allowlist 存在 → 掃全模組，比對 allowlist 計數
+# 全量模式 + allowlist 不存在 → 跳過（避免誤報一堆歷史 suppression）
 # ------------------------------------------------------------------
 echo "  [1/3] CPD-OFF/NOPMD suppressions..."
 
-declare -A allowlist_map
-if [[ -f "$ALLOWLIST" ]]; then
+if [[ $INCREMENTAL -eq 1 ]]; then
+    # 增量模式：只掃變更檔案
+    while IFS= read -r file; do
+        [[ -f "$file" ]] || continue
+        count=$(grep -c 'CPD-OFF\|NOPMD' "$file" 2>/dev/null || echo "0")
+        if [[ "$count" -gt 0 ]]; then
+            rel="${file#$MODULE_DIR/}"
+            violations+=("$rel: new suppression(s) detected ($count occurrence(s)) — check allowlist")
+        fi
+    done < "$FILELIST"
+elif [[ -f "$ALLOWLIST" ]]; then
+    # 全量模式 + allowlist 存在：比對計數
+    declare -A allowlist_map
     while IFS= read -r line; do
         line=$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         [[ -z "$line" || "$line" == \#* ]] && continue
@@ -55,50 +87,70 @@ if [[ -f "$ALLOWLIST" ]]; then
         count="${line##*:}"
         allowlist_map["$filepath"]="$count"
     done < "$ALLOWLIST"
+
+    declare -A found_counts
+    while IFS= read -r file; do
+        count=$(grep -c 'CPD-OFF\|NOPMD' "$file" 2>/dev/null || echo "0")
+        rel="${file#$MODULE_DIR/}"
+        found_counts["$rel"]="$count"
+    done < <(grep -rl 'CPD-OFF\|NOPMD' "$SRC_DIR" 2>/dev/null || true)
+
+    declare -A all_files
+    for key in "${!allowlist_map[@]}"; do all_files["$key"]=1; done
+    for key in "${!found_counts[@]}"; do all_files["$key"]=1; done
+
+    for rel in "${!all_files[@]}"; do
+        found="${found_counts[$rel]:-0}"
+        allowed="${allowlist_map[$rel]:-0}"
+        if [[ "$found" -ne "$allowed" ]]; then
+            violations+=("$rel: found $found suppression(s), allowed $allowed")
+        fi
+    done
+else
+    echo "    (no allowlist found — skipping CPD-OFF/NOPMD count check)"
+    echo "    Tip: create $MODULE/src/test/resources/lint-suppression-allowlist.txt for full-module checks"
 fi
-
-declare -A found_counts
-while IFS= read -r file; do
-    count=$(grep -c 'CPD-OFF\|NOPMD' "$file" 2>/dev/null || echo "0")
-    rel="${file#$MODULE_DIR/}"
-    found_counts["$rel"]="$count"
-done < <(grep -rl 'CPD-OFF\|NOPMD' "$SRC_DIR" 2>/dev/null || true)
-
-declare -A all_files
-for key in "${!allowlist_map[@]}"; do all_files["$key"]=1; done
-for key in "${!found_counts[@]}"; do all_files["$key"]=1; done
-
-for rel in "${!all_files[@]}"; do
-    found="${found_counts[$rel]:-0}"
-    allowed="${allowlist_map[$rel]:-0}"
-    if [[ "$found" -ne "$allowed" ]]; then
-        violations+=("$rel: found $found suppression(s), allowed $allowed")
-    fi
-done
 
 # ------------------------------------------------------------------
 # Check 2 & 3: @SuppressWarnings("all") / @SuppressWarnings("PMD")
-# [R6#2] "PMD"（無特定規則名）也有自指悖論，PMD 6.55 實測確認
-# [R6#3] 無 @ 前綴，對齊 Java test 的 findFilesContaining() 語意
-# [R6#5] 用 grep -rl（file-level），語意對齊 Java test
+# 增量模式 → 只掃變更檔案
+# 全量模式 → 掃全模組
 # ------------------------------------------------------------------
 echo "  [2/3] @SuppressWarnings(\"all\") bypasses..."
 
-while IFS= read -r file; do
-    rel="${file#$MODULE_DIR/}"
-    violations+=("$rel: SuppressWarnings(\"all\") bypass")
-done < <(grep -rl 'SuppressWarnings("all"' "$SRC_DIR" 2>/dev/null || true)
+if [[ $INCREMENTAL -eq 1 ]]; then
+    while IFS= read -r file; do
+        [[ -f "$file" ]] || continue
+        if grep -q 'SuppressWarnings("all"' "$file" 2>/dev/null; then
+            rel="${file#$MODULE_DIR/}"
+            violations+=("$rel: SuppressWarnings(\"all\") bypass")
+        fi
+    done < "$FILELIST"
+else
+    while IFS= read -r file; do
+        rel="${file#$MODULE_DIR/}"
+        violations+=("$rel: SuppressWarnings(\"all\") bypass")
+    done < <(grep -rl 'SuppressWarnings("all"' "$SRC_DIR" 2>/dev/null || true)
+fi
 
 echo "  [3/3] @SuppressWarnings(\"PMD\") bypasses..."
 
-while IFS= read -r file; do
-    rel="${file#$MODULE_DIR/}"
-    # 排除 "PMD.XxxRule"（有點號 = 特定規則，PMD XPath 已覆蓋）
-    # 只抓 "PMD" 精確匹配（壓全部 PMD 規則 = 自指悖論）
-    if grep -q 'SuppressWarnings("PMD")' "$file" 2>/dev/null; then
-        violations+=("$rel: SuppressWarnings(\"PMD\") bypass (suppresses all PMD rules)")
-    fi
-done < <(grep -rl 'SuppressWarnings("PMD"' "$SRC_DIR" 2>/dev/null || true)
+if [[ $INCREMENTAL -eq 1 ]]; then
+    while IFS= read -r file; do
+        [[ -f "$file" ]] || continue
+        if grep -q 'SuppressWarnings("PMD")' "$file" 2>/dev/null; then
+            rel="${file#$MODULE_DIR/}"
+            violations+=("$rel: SuppressWarnings(\"PMD\") bypass (suppresses all PMD rules)")
+        fi
+    done < "$FILELIST"
+else
+    while IFS= read -r file; do
+        rel="${file#$MODULE_DIR/}"
+        if grep -q 'SuppressWarnings("PMD")' "$file" 2>/dev/null; then
+            violations+=("$rel: SuppressWarnings(\"PMD\") bypass (suppresses all PMD rules)")
+        fi
+    done < <(grep -rl 'SuppressWarnings("PMD"' "$SRC_DIR" 2>/dev/null || true)
+fi
 
 # ------------------------------------------------------------------
 # Report

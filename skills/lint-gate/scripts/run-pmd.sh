@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # run-pmd.sh — 用獨立 PMD CLI 執行 PMD + CPD 檢查
-# 用法: source run-pmd.sh && run_pmd <module> [project_root]
-#        source run-pmd.sh && run_cpd <module> [project_root]
+# 用法: source run-pmd.sh && run_pmd <module> [project_root] [filelist]
+#        source run-pmd.sh && run_cpd <module> [project_root] [filelist]
+#
+# filelist: 可選的檔案清單路徑。提供時只掃該清單內的檔案（增量模式）。
+#           不提供時掃整個模組（全量模式，適用 --full 或 CI）。
+#
 # 需要先跑 detect-env.sh 或手動 export PMD_RUN, PMD_ENGINE_VERSION 等
 # 依賴: bash, java (PMD 用 Java 8+ 即可)
 #
@@ -70,9 +74,13 @@ _exec_pmd() {
     return $exit_code
 }
 
+# run_pmd <module> [project_root] [filelist]
+# filelist 提供時 = 增量模式（只掃清單內檔案）
+# filelist 不提供時 = 全量模式（掃整個 src/main/java）
 run_pmd() {
     local module="$1"
     local project_root="${2:-.}"
+    local filelist="${3:-}"
     _load_versions
 
     local src_dir="$project_root/$module/src/main/java"
@@ -88,19 +96,41 @@ run_pmd() {
         return 1
     fi
 
-    echo "Running PMD on $module (engine=$PMD_ENGINE_VERSION, ruleset=$RULESET_PATH)..."
+    # 增量模式：檔案清單為空 → 無需檢查
+    if [[ -n "$filelist" ]]; then
+        if [[ ! -s "$filelist" ]]; then
+            echo "PMD: No changed files to check (incremental mode)."
+            return 0
+        fi
+        local file_count
+        file_count=$(wc -l < "$filelist")
+        echo "Running PMD on $module — $file_count changed file(s) (engine=$PMD_ENGINE_VERSION, ruleset=$RULESET_PATH)..."
+    else
+        echo "Running PMD on $module — full scan (engine=$PMD_ENGINE_VERSION, ruleset=$RULESET_PATH)..."
+    fi
 
     local report_file
     report_file=$(mktemp /tmp/pmd-report-XXXXXX.txt)
 
     # PMD 6.x exit codes: 0=no violations, 4=violations found, other=error
     local exit_code=0
-    _exec_pmd pmd \
-        -d "$src_dir" \
-        -R "$ruleset" \
-        -f text \
-        -r "$report_file" \
-        --cache "$cache_file" || exit_code=$?
+    if [[ -n "$filelist" ]]; then
+        # 增量模式：-filelist
+        _exec_pmd pmd \
+            -filelist "$filelist" \
+            -R "$ruleset" \
+            -f text \
+            -r "$report_file" \
+            --cache "$cache_file" || exit_code=$?
+    else
+        # 全量模式：-d
+        _exec_pmd pmd \
+            -d "$src_dir" \
+            -R "$ruleset" \
+            -f text \
+            -r "$report_file" \
+            --cache "$cache_file" || exit_code=$?
+    fi
 
     if [[ $exit_code -eq 0 ]]; then
         echo "PMD: No violations found."
@@ -121,9 +151,14 @@ run_pmd() {
     fi
 }
 
+# run_cpd <module> [project_root] [filelist]
+# CPD 必須掃全模組才能偵測跨檔案重複。
+# filelist 提供時 = 增量模式：仍掃全模組，但輸出只保留涉及變更檔案的 duplication。
+# filelist 不提供時 = 全量模式：報告所有 duplication。
 run_cpd() {
     local module="$1"
     local project_root="${2:-.}"
+    local filelist="${3:-}"
     _load_versions
 
     local src_dir="$project_root/$module/src/main/java"
@@ -133,7 +168,14 @@ run_cpd() {
         return 1
     fi
 
-    echo "Running CPD on $module (minimumTokens=$MINIMUM_TOKENS)..."
+    if [[ -n "$filelist" && ! -s "$filelist" ]]; then
+        echo "CPD: No changed files to check (incremental mode)."
+        return 0
+    fi
+
+    local mode_label="full scan"
+    [[ -n "$filelist" ]] && mode_label="full scan, filtered to changed files"
+    echo "Running CPD on $module — $mode_label (minimumTokens=$MINIMUM_TOKENS)..."
 
     local report_file
     report_file=$(mktemp /tmp/cpd-report-XXXXXX.txt)
@@ -153,10 +195,54 @@ run_cpd() {
         rm -f "$report_file"
         return 0
     elif [[ $exit_code -eq 4 ]]; then
-        local count
-        count=$(grep -c '^Found a' "$report_file" 2>/dev/null || echo "0")
-        echo "CPD: $count duplication(s) found."
-        cat "$report_file"
+        if [[ -n "$filelist" ]]; then
+            # 增量模式：過濾輸出，只保留涉及變更檔案的 duplication block
+            local filtered_file
+            filtered_file=$(mktemp /tmp/cpd-filtered-XXXXXX.txt)
+            local in_block=0
+            local block=""
+            local block_relevant=0
+
+            while IFS= read -r line; do
+                if [[ "$line" == "Found a"* ]]; then
+                    # 輸出前一個 block（如果 relevant）
+                    if [[ $in_block -eq 1 && $block_relevant -eq 1 ]]; then
+                        echo "$block" >> "$filtered_file"
+                    fi
+                    block="$line"
+                    block_relevant=0
+                    in_block=1
+                elif [[ $in_block -eq 1 ]]; then
+                    block="$block"$'\n'"$line"
+                    # 檢查這行是否包含變更檔案的路徑
+                    while IFS= read -r changed_file; do
+                        if [[ "$line" == *"$changed_file"* ]]; then
+                            block_relevant=1
+                            break
+                        fi
+                    done < "$filelist"
+                fi
+            done < "$report_file"
+            # 輸出最後一個 block
+            if [[ $in_block -eq 1 && $block_relevant -eq 1 ]]; then
+                echo "$block" >> "$filtered_file"
+            fi
+
+            if [[ -s "$filtered_file" ]]; then
+                local count
+                count=$(grep -c '^Found a' "$filtered_file" 2>/dev/null || echo "0")
+                echo "CPD: $count duplication(s) involving changed files (filtered from full scan)."
+                cat "$filtered_file"
+            else
+                echo "CPD: Duplications exist in module but none involve changed files."
+            fi
+            rm -f "$filtered_file"
+        else
+            local count
+            count=$(grep -c '^Found a' "$report_file" 2>/dev/null || echo "0")
+            echo "CPD: $count duplication(s) found."
+            cat "$report_file"
+        fi
         rm -f "$report_file"
         return 4
     else
