@@ -13,19 +13,22 @@ fast standalone checks first, optional Maven-based ArchUnit second.
 
 ## Arguments
 
-`$ARGUMENTS` = `[module] [--full]`
+`$ARGUMENTS` = `[module] [--full] [--report-only]`
 
 - **module** (optional): Module name. Default: auto-detect from recent git changes.
 - **--full** (optional): Scan entire module instead of only branch-changed files.
+- **--report-only** (optional): Only report violations, do NOT auto-fix anything.
 
 Valid modules: `TlwCrpFrontendApi`, `TlwCrpRestServer`
 
-### Incremental vs Full Mode
+### Mode Matrix
 
-| Mode | Scope | Use Case |
-|------|-------|----------|
-| **Incremental** (default) | Only files changed on branch vs master + untracked | Commit 前自檢，只看自己改的 |
-| **Full** (`--full`) | Entire `src/main/java` | CI 驗證、首次導入、全模組健檢 |
+| Mode | Scope | Auto-fix | Use Case |
+|------|-------|----------|----------|
+| **Incremental** (default) | Branch-changed files | Import + PMD safe fixes | Commit 前自檢 |
+| **Full** (`--full`) | Entire `src/main/java` | Import + PMD safe fixes | 全模組健檢 |
+| **Report-only** (`--report-only`) | Branch-changed files | 無 | 只想看問題，不要改我的 code |
+| **Full + Report-only** | Entire `src/main/java` | 無 | CI gate / 團隊 audit |
 
 ## Phase 0 — Environment Setup + File List
 
@@ -66,6 +69,8 @@ If `--full` is specified, set `FILELIST=""` (empty string, not a file) to signal
 
 ### Step 1: Auto-fix imports (tool-based, no Claude judgement needed)
 
+**If `--report-only`: SKIP this step entirely.** Import fixes are auto-applied, report-only 模式不應修改任何檔案。
+
 `--fix-imports-only` removes unused imports, sorts, and groups — it does NOT reformat other code.
 It does NOT add missing imports (that requires compilation).
 It does NOT convert fully-qualified names to import + short name (that's Step 2, Claude does it).
@@ -99,10 +104,14 @@ PMD uses the project's `pmd-rules.xml` (same file CI uses). This includes:
 - Standard lint rules (imports, logger, System.out, etc.)
 - Suppression guard rules: `NoSuppressWarningsPmd`, `NoGeneratedAnnotation`
 
-If violations found, Claude reads `${CLAUDE_SKILL_DIR}/reference/violation-fixes.md` and:
+If violations found:
+
+**Normal mode:** Claude reads `${CLAUDE_SKILL_DIR}/reference/violation-fixes.md` and:
 - **Auto-fix (Claude applies via Edit tool):** logger concatenation → `{}` placeholders, fully qualified names → import + short name, System.out → logger
 - **Report only (human decision):** empty catch, unused local vars, CPD duplications
 - Re-run PMD to confirm fixes
+
+**`--report-only` mode:** List all violations with file, line, rule name. Do NOT apply any fixes. Do NOT read violation-fixes.md.
 
 Note: Step 1 (tool) handles unused/star imports. Step 2 (Claude) handles everything else PMD catches.
 
