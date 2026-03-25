@@ -33,11 +33,18 @@ Pre-commit 程式碼品質關卡，兩階段漸進式檢查：
 |------|------|--------|
 | [Claude Code](https://claude.ai/code) | 最新版 | 必要 |
 | Java 17+ | 系統預設 | 必要（PMD CLI + google-java-format） |
-| Git Bash / bash | 4.0+ | 必要 |
+| Git Bash / bash | 4.0+ | 必要（macOS 需 `brew install bash`） |
 | curl + unzip | 任意 | 必要（首次下載工具） |
 | Maven | 3.x | 選用（Phase 2） |
 
 > 首次執行時自動下載 PMD CLI (~35MB) 和 google-java-format (~5MB) 到 `~/.claude/tools/`。
+> 可透過環境變數 `CODE_GATE_TOOLS_DIR` 自訂安裝路徑。
+
+**注意事項：**
+- macOS 預設 Bash 為 3.2，需透過 `brew install bash` 升級至 4.0+
+- `--fix-imports-only` 會同時重新排序 imports 為 Google style，可能與 IntelliJ 預設排序不同。如需跳過，使用 `--report-only` 模式
+- 支援 PMD 6.x 和 PMD 7.x（自動偵測版本並切換 CLI 語法）
+- 需存取的外部 URL：`github.com`（PMD/GJF 下載）、`repo1.maven.org`（版本解析）
 
 ---
 

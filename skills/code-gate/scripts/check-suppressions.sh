@@ -13,7 +13,7 @@
 #
 # 輸出協定:
 #   stderr → debug / progress 訊息
-#   stdout → violation 明細 + ---LINT_GATE_RESULT--- JSON summary
+#   stdout → violation 明細 + ---CODE_GATE_RESULT--- JSON summary
 
 set -euo pipefail
 
@@ -43,13 +43,13 @@ ALLOWLIST="$MODULE_DIR/src/test/resources/lint-suppression-allowlist.txt"
 
 if [[ ! -d "$SRC_DIR" ]]; then
     echo "ERROR: $SRC_DIR not found" >&2
-    echo "---LINT_GATE_RESULT---"
+    echo "---CODE_GATE_RESULT---"
     echo "{\"tool\":\"suppressions\",\"status\":\"error\",\"message\":\"source directory not found\"}"
     exit 1
 fi
 
 if [[ -n "$FILELIST" && ! -s "$FILELIST" ]]; then
-    echo "---LINT_GATE_RESULT---"
+    echo "---CODE_GATE_RESULT---"
     echo "{\"tool\":\"suppressions\",\"status\":\"skip\",\"violations\":0}"
     exit 0
 fi
@@ -155,7 +155,7 @@ fi
 # ------------------------------------------------------------------
 if [[ ${#violations[@]} -eq 0 ]]; then
     log "Suppression guard: PASS"
-    echo "---LINT_GATE_RESULT---"
+    echo "---CODE_GATE_RESULT---"
     echo "{\"tool\":\"suppressions\",\"status\":\"pass\",\"violations\":0}"
     exit 0
 else
@@ -164,7 +164,7 @@ else
     for v in "${violations[@]}"; do
         echo "  - $v"
     done
-    echo "---LINT_GATE_RESULT---"
+    echo "---CODE_GATE_RESULT---"
     echo "{\"tool\":\"suppressions\",\"status\":\"fail\",\"violations\":${#violations[@]}}"
     exit 1
 fi

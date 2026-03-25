@@ -5,7 +5,7 @@
 
 set -euo pipefail
 
-TOOLS_DIR="$HOME/.claude/tools"
+TOOLS_DIR="${CODE_GATE_TOOLS_DIR:-$HOME/.claude/tools}"
 VERSIONS_FILE="$TOOLS_DIR/code-gate-versions.txt"
 
 # Defaults (PMD 6.55.0 = last stable 6.x)
@@ -44,6 +44,19 @@ VEOF
         | grep '<version>' \
         | sed 's/.*<version>\([^<]*\)<\/version>.*/\1/' \
         | head -1 || true)
+
+    # Detect Maven property reference ${...} — cannot resolve, fallback to default
+    if [[ "$plugin_version" == *'${'* ]]; then
+        echo "WARN: maven-pmd-plugin version uses property reference ($plugin_version) — cannot resolve" >&2
+        echo "WARN: Using default PMD $DEFAULT_PMD_ENGINE. To align with CI, set version directly in pom.xml." >&2
+        plugin_version=""
+    fi
+
+    # Validate version format (prevent path traversal / injection)
+    if [[ -n "$plugin_version" && ! "$plugin_version" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+        echo "WARN: Invalid maven-pmd-plugin version format: $plugin_version — using default" >&2
+        plugin_version=""
+    fi
 
     local min_tokens
     min_tokens=$(grep '<minimumTokens>' "$root_pom" \
@@ -115,6 +128,12 @@ VEOF
         | sed 's/.*<pmdVersion>\([^<]*\)<\/pmdVersion>.*/\1/' \
         | head -1 || true)
     engine_version="${engine_version:-$DEFAULT_PMD_ENGINE}"
+
+    # Validate engine version format
+    if [[ ! "$engine_version" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+        echo "WARN: Invalid PMD engine version format: $engine_version — using default" >&2
+        engine_version="$DEFAULT_PMD_ENGINE"
+    fi
 
     mkdir -p "$TOOLS_DIR"
     cat > "$VERSIONS_FILE" <<VEOF

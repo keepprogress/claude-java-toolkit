@@ -7,31 +7,41 @@
 # project_root: 專案根目錄（預設 "."）
 # filelist:     增量模式的檔案清單路徑。空字串 = 全量模式。
 #
-# PMD 版本相容性：目前語法為 PMD 6.x。
-# PMD 7.x CLI 語法不同（pmd check --dir），升級時需依 major version 分流。
+# PMD 版本相容性：支援 PMD 6.x 和 7.x，根據 major version 自動分流 CLI 語法。
 #
 # 輸出協定:
 #   stderr → debug / progress 訊息
-#   stdout → violation 明細（供 Claude auto-fix）+ ---LINT_GATE_RESULT--- JSON summary
+#   stdout → violation 明細（供 Claude auto-fix）+ ---CODE_GATE_RESULT--- JSON summary
 
 set -euo pipefail
 
-TOOLS_DIR="$HOME/.claude/tools"
+if [[ ${BASH_VERSINFO[0]} -lt 4 ]]; then
+    echo "ERROR: bash 4+ required for run-pmd.sh (current: $BASH_VERSION)" >&2
+    echo "On macOS: brew install bash" >&2
+    exit 1
+fi
+
+TOOLS_DIR="${CODE_GATE_TOOLS_DIR:-$HOME/.claude/tools}"
 VERSIONS_FILE="$TOOLS_DIR/code-gate-versions.txt"
 
 log() { echo "$1" >&2; }
 
 _load_versions() {
     if [[ ! -f "$VERSIONS_FILE" ]]; then
-        echo "ERROR: $VERSIONS_FILE not found. Run detect-env.sh first." >&2
+        echo "ERROR: $VERSIONS_FILE not found. Please re-run /claude-java-toolkit:code-gate — it will auto-detect and set up the environment." >&2
         return 1
     fi
     PMD_ENGINE_VERSION=$(grep '^pmd-engine=' "$VERSIONS_FILE" | cut -d= -f2)
     MINIMUM_TOKENS=$(grep '^minimumTokens=' "$VERSIONS_FILE" | cut -d= -f2)
     RULESET_PATH=$(grep '^ruleset=' "$VERSIONS_FILE" | cut -d= -f2 || true)
 
+    PMD_MAJOR="${PMD_ENGINE_VERSION%%.*}"
     local pmd_dir="$TOOLS_DIR/pmd-bin-${PMD_ENGINE_VERSION}"
-    PMD_RUN="${PMD_RUN:-$pmd_dir/bin/run.sh}"
+    if [[ "$PMD_MAJOR" -ge 7 ]]; then
+        PMD_RUN="${PMD_RUN:-$pmd_dir/bin/pmd}"
+    else
+        PMD_RUN="${PMD_RUN:-$pmd_dir/bin/run.sh}"
+    fi
     PMD_DIR="$pmd_dir"
 }
 
@@ -58,11 +68,11 @@ _resolve_ruleset() {
     elif [[ -f "$project_root/pmd-ruleset.xml" ]]; then
         echo "$project_root/pmd-ruleset.xml"
     else
-        echo "category/java/bestpractices.xml,category/java/errorprone.xml,category/java/codestyle.xml"
+        echo "category/java/bestpractices.xml,category/java/errorprone.xml,category/java/codestyle.xml,category/java/multithreading.xml,category/java/performance.xml"
     fi
 }
 
-# Try run.sh first; fallback to java -cp (Git Bash readlink -f issue)
+# Execute PMD/CPD with version-aware CLI syntax and fallback
 _exec_pmd() {
     local tool="$1"
     shift
@@ -71,24 +81,43 @@ _exec_pmd() {
     local stderr_file
     stderr_file=$(mktemp)
 
-    bash "$PMD_RUN" "$tool" "${tool_args[@]}" 2>"$stderr_file" || exit_code=$?
+    if [[ "$PMD_MAJOR" -ge 7 ]]; then
+        # PMD 7.x: bin/pmd <tool> [args] (e.g., pmd check ..., pmd cpd ...)
+        local pmd_cmd="$tool"
+        [[ "$tool" == "pmd" ]] && pmd_cmd="check"
 
-    if [[ $exit_code -ne 0 && $exit_code -ne 4 ]]; then
-        cat "$stderr_file" >&2
-        log "  (run.sh failed with $exit_code, trying java -cp fallback...)"
+        bash "$PMD_RUN" "$pmd_cmd" "${tool_args[@]}" --no-progress 2>"$stderr_file" || exit_code=$?
 
-        local main_class
-        case "$tool" in
-            pmd) main_class="net.sourceforge.pmd.PMD" ;;
-            cpd) main_class="net.sourceforge.pmd.cpd.CPD" ;;
-            *)   echo "ERROR: Unknown PMD tool: $tool" >&2; rm -f "$stderr_file"; return 1 ;;
-        esac
-
-        exit_code=0
-        java -cp "$PMD_DIR/lib/*" "$main_class" "${tool_args[@]}" 2>"$stderr_file" || exit_code=$?
+        # PMD 7.3.0+: exit code 5 = recoverable errors, report still valid
+        if [[ $exit_code -eq 5 ]]; then
+            log "  (PMD 7: completed with recoverable errors — report is still valid)"
+            exit_code=4
+        fi
 
         if [[ $exit_code -ne 0 && $exit_code -ne 4 ]]; then
             cat "$stderr_file" >&2
+        fi
+    else
+        # PMD 6.x: bin/run.sh <tool> [args]
+        bash "$PMD_RUN" "$tool" "${tool_args[@]}" 2>"$stderr_file" || exit_code=$?
+
+        if [[ $exit_code -ne 0 && $exit_code -ne 4 ]]; then
+            cat "$stderr_file" >&2
+            log "  (run.sh failed with $exit_code, trying java -cp fallback...)"
+
+            local main_class
+            case "$tool" in
+                pmd) main_class="net.sourceforge.pmd.PMD" ;;
+                cpd) main_class="net.sourceforge.pmd.cpd.CPD" ;;
+                *)   echo "ERROR: Unknown PMD tool: $tool" >&2; rm -f "$stderr_file"; return 1 ;;
+            esac
+
+            exit_code=0
+            java -cp "$PMD_DIR/lib/*" "$main_class" "${tool_args[@]}" 2>"$stderr_file" || exit_code=$?
+
+            if [[ $exit_code -ne 0 && $exit_code -ne 4 ]]; then
+                cat "$stderr_file" >&2
+            fi
         fi
     fi
 
@@ -112,14 +141,14 @@ run_pmd() {
 
     if [[ ! -d "$src_dir" ]]; then
         echo "ERROR: Source directory not found: $src_dir" >&2
-        echo "---LINT_GATE_RESULT---"
+        echo "---CODE_GATE_RESULT---"
         echo "{\"tool\":\"pmd\",\"status\":\"error\",\"exit_code\":1,\"message\":\"source directory not found\"}"
         return 1
     fi
 
     # Incremental: empty filelist = nothing to check
     if [[ -n "$filelist" && ! -s "$filelist" ]]; then
-        echo "---LINT_GATE_RESULT---"
+        echo "---CODE_GATE_RESULT---"
         echo "{\"tool\":\"pmd\",\"status\":\"skip\",\"violations\":0,\"files_checked\":0,\"engine\":\"$PMD_ENGINE_VERSION\",\"ruleset_type\":\"$ruleset_type\"}"
         return 0
     fi
@@ -164,7 +193,7 @@ run_pmd() {
     if [[ $exit_code -eq 0 ]]; then
         log "PMD: No violations found."
         rm -f "$report_file"
-        echo "---LINT_GATE_RESULT---"
+        echo "---CODE_GATE_RESULT---"
         echo "{\"tool\":\"pmd\",\"status\":\"pass\",\"violations\":0,\"files_checked\":$file_count,\"engine\":\"$PMD_ENGINE_VERSION\",\"ruleset_type\":\"$ruleset_type\"}"
         return 0
     elif [[ $exit_code -eq 4 ]]; then
@@ -174,14 +203,14 @@ run_pmd() {
         # Violation details on stdout for Claude to parse and auto-fix
         cat "$report_file"
         rm -f "$report_file"
-        echo "---LINT_GATE_RESULT---"
+        echo "---CODE_GATE_RESULT---"
         echo "{\"tool\":\"pmd\",\"status\":\"fail\",\"violations\":$count,\"files_checked\":$file_count,\"engine\":\"$PMD_ENGINE_VERSION\",\"ruleset_type\":\"$ruleset_type\"}"
         return 4
     else
         echo "ERROR: PMD exited with code $exit_code" >&2
         cat "$report_file" >&2 2>/dev/null
         rm -f "$report_file"
-        echo "---LINT_GATE_RESULT---"
+        echo "---CODE_GATE_RESULT---"
         echo "{\"tool\":\"pmd\",\"status\":\"error\",\"exit_code\":$exit_code}"
         return "$exit_code"
     fi
@@ -198,13 +227,13 @@ run_cpd() {
 
     if [[ ! -d "$src_dir" ]]; then
         echo "ERROR: Source directory not found: $src_dir" >&2
-        echo "---LINT_GATE_RESULT---"
+        echo "---CODE_GATE_RESULT---"
         echo "{\"tool\":\"cpd\",\"status\":\"error\",\"exit_code\":1,\"message\":\"source directory not found\"}"
         return 1
     fi
 
     if [[ -n "$filelist" && ! -s "$filelist" ]]; then
-        echo "---LINT_GATE_RESULT---"
+        echo "---CODE_GATE_RESULT---"
         echo "{\"tool\":\"cpd\",\"status\":\"skip\",\"duplications\":0}"
         return 0
     fi
@@ -231,7 +260,7 @@ run_cpd() {
     if [[ $exit_code -eq 0 ]]; then
         log "CPD: No duplications found."
         rm -f "$report_file"
-        echo "---LINT_GATE_RESULT---"
+        echo "---CODE_GATE_RESULT---"
         echo "{\"tool\":\"cpd\",\"status\":\"pass\",\"duplications\":0}"
         return 0
     elif [[ $exit_code -eq 4 ]]; then
@@ -275,12 +304,12 @@ run_cpd() {
                 log "CPD: $count duplication(s) involving changed files."
                 cat "$filtered_file"
                 rm -f "$filtered_file" "$report_file"
-                echo "---LINT_GATE_RESULT---"
+                echo "---CODE_GATE_RESULT---"
                 echo "{\"tool\":\"cpd\",\"status\":\"fail\",\"duplications\":$count,\"mode\":\"incremental\"}"
             else
                 log "CPD: Duplications exist but none involve changed files."
                 rm -f "$filtered_file" "$report_file"
-                echo "---LINT_GATE_RESULT---"
+                echo "---CODE_GATE_RESULT---"
                 echo "{\"tool\":\"cpd\",\"status\":\"pass\",\"duplications\":0,\"mode\":\"incremental\",\"note\":\"duplications exist outside changed files\"}"
                 return 0
             fi
@@ -290,7 +319,7 @@ run_cpd() {
             log "CPD: $count duplication(s) found."
             cat "$report_file"
             rm -f "$report_file"
-            echo "---LINT_GATE_RESULT---"
+            echo "---CODE_GATE_RESULT---"
             echo "{\"tool\":\"cpd\",\"status\":\"fail\",\"duplications\":$count,\"mode\":\"full\"}"
         fi
         return 4
@@ -298,7 +327,7 @@ run_cpd() {
         echo "ERROR: CPD exited with code $exit_code" >&2
         cat "$report_file" >&2 2>/dev/null
         rm -f "$report_file"
-        echo "---LINT_GATE_RESULT---"
+        echo "---CODE_GATE_RESULT---"
         echo "{\"tool\":\"cpd\",\"status\":\"error\",\"exit_code\":$exit_code}"
         return "$exit_code"
     fi

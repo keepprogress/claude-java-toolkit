@@ -20,10 +20,12 @@ If not, uses PMD built-in rulesets for quick vulnerability scanning.
 
 All scripts follow a unified output convention:
 - **stderr**: Debug and progress messages (informational only, not for parsing)
-- **stdout**: Violation details (if any) followed by a `---LINT_GATE_RESULT---` marker and a single-line JSON summary
+- **stdout**: Violation details (if any) followed by a `---CODE_GATE_RESULT---` marker and a single-line JSON summary
 
-When running scripts, parse the JSON after `---LINT_GATE_RESULT---` to get structured results.
+When running scripts, parse the JSON after `---CODE_GATE_RESULT---` to get structured results.
 Violation details above the marker are for auto-fix analysis.
+
+> **Note**: `--fix-imports-only` also reorders imports to Google style. This may differ from the team's IntelliJ/IDE import order settings.
 
 ### Status values per tool
 
@@ -80,7 +82,10 @@ fi
 
 If git changes are available, narrow to changed modules:
 ```bash
-CHANGED_MODULES=$(git diff --name-only "$(git merge-base master HEAD)" -- '*/src/main/java/**/*.java' \
+# Auto-detect default branch (supports main, master, develop, etc.)
+BASE_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@') || BASE_BRANCH="master"
+
+CHANGED_MODULES=$(git diff --name-only "$(git merge-base "$BASE_BRANCH" HEAD)" -- '*/src/main/java/**/*.java' \
   | cut -d/ -f1 | sort -u)
 ```
 
@@ -100,8 +105,9 @@ else
 fi
 
 FILELIST=$(mktemp /tmp/code-gate-filelist-XXXXXX.txt)
+# Reuse BASE_BRANCH from Step 2 (auto-detected)
 {
-  git diff --name-only --diff-filter=ACMR "$(git merge-base master HEAD)" -- "$SRC_PREFIX"
+  git diff --name-only --diff-filter=ACMR "$(git merge-base "$BASE_BRANCH" HEAD)" -- "$SRC_PREFIX"
   git ls-files --others --exclude-standard -- "$SRC_PREFIX"
 } | grep '\.java$' | sort -u > "$FILELIST"
 
@@ -120,15 +126,16 @@ If `--full`, set `FILELIST=""` (empty string) for full-scan mode.
 ```bash
 source "$HOME/.claude/tools/code-gate-env.sh"
 
+# Note: xargs without -r for macOS BSD compatibility; input is pre-validated non-empty
 if [[ -n "$FILELIST" && -s "$FILELIST" ]]; then
-    xargs -r "$JAVA_GJF" -jar "$GJF_JAR" --fix-imports-only --replace < "$FILELIST"
+    xargs "$JAVA_GJF" -jar "$GJF_JAR" --fix-imports-only --replace < "$FILELIST"
 else
     if [[ "$MODULE" == "." ]]; then
         find "src/main/java" -name '*.java' | \
-            xargs -r "$JAVA_GJF" -jar "$GJF_JAR" --fix-imports-only --replace
+            xargs "$JAVA_GJF" -jar "$GJF_JAR" --fix-imports-only --replace
     else
         find "$MODULE/src/main/java" -name '*.java' | \
-            xargs -r "$JAVA_GJF" -jar "$GJF_JAR" --fix-imports-only --replace
+            xargs "$JAVA_GJF" -jar "$GJF_JAR" --fix-imports-only --replace
     fi
 fi
 ```
@@ -142,7 +149,7 @@ source "${CLAUDE_SKILL_DIR}/scripts/run-pmd.sh"
 run_pmd "$MODULE" "." "$FILELIST"
 ```
 
-Parse the JSON result after `---LINT_GATE_RESULT---`.
+Parse the JSON result after `---CODE_GATE_RESULT---`.
 Violation details (lines above the marker) are for auto-fix analysis.
 
 If violations found:
