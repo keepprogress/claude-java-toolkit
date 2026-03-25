@@ -24,6 +24,18 @@ fi
 TOOLS_DIR="${CODE_GATE_TOOLS_DIR:-$HOME/.claude/tools}"
 VERSIONS_FILE="$TOOLS_DIR/code-gate-versions.txt"
 
+# Temp file tracking for trap-based cleanup
+_CODE_GATE_TMP_FILES=()
+_code_gate_cleanup() { rm -f "${_CODE_GATE_TMP_FILES[@]}" 2>/dev/null; }
+trap _code_gate_cleanup EXIT
+
+_tracked_mktemp() {
+    local f
+    f=$(mktemp "$@")
+    _CODE_GATE_TMP_FILES+=("$f")
+    echo "$f"
+}
+
 log() { echo "$1" >&2; }
 
 _load_versions() {
@@ -79,7 +91,7 @@ _exec_pmd() {
     local tool_args=("$@")
     local exit_code=0
     local stderr_file
-    stderr_file=$(mktemp)
+    stderr_file=$(_tracked_mktemp)
 
     if [[ "$PMD_MAJOR" -ge 7 ]]; then
         # PMD 7.x: bin/pmd <tool> [args] (e.g., pmd check ..., pmd cpd ...)
@@ -135,7 +147,10 @@ run_pmd() {
     src_dir=$(_resolve_src_dir "$module" "$project_root")
     local ruleset
     ruleset=$(_resolve_ruleset "$project_root")
-    local cache_file="$TOOLS_DIR/pmd-cache-${module//\//_}.bin"
+    # Include project root hash in cache key to prevent cross-project cache pollution
+    local project_hash
+    project_hash=$(echo "$project_root" | md5sum 2>/dev/null | cut -c1-8 || echo "default")
+    local cache_file="$TOOLS_DIR/pmd-cache-${project_hash}-${module//\//_}.bin"
     local ruleset_type="project"
     [[ "$ruleset" == category/* ]] && ruleset_type="built-in"
 
@@ -171,7 +186,7 @@ run_pmd() {
     fi
 
     local report_file
-    report_file=$(mktemp /tmp/pmd-report-XXXXXX.txt)
+    report_file=$(_tracked_mktemp /tmp/pmd-report-XXXXXX.txt)
 
     local exit_code=0
     if [[ -n "$filelist" ]]; then
@@ -246,7 +261,7 @@ run_cpd() {
     log "Running CPD on $label — $mode_label (minimumTokens=$MINIMUM_TOKENS)..."
 
     local report_file
-    report_file=$(mktemp /tmp/cpd-report-XXXXXX.txt)
+    report_file=$(_tracked_mktemp /tmp/cpd-report-XXXXXX.txt)
 
     local exit_code=0
     _exec_pmd cpd \
@@ -265,7 +280,10 @@ run_cpd() {
         return 0
     elif [[ $exit_code -eq 4 ]]; then
         if [[ -n "$filelist" ]]; then
-            # Incremental: filter to only duplications involving changed files
+            # Design decision: CPD requires full source context for cross-file duplication
+            # detection, so we scan the entire src_dir even in incremental mode, then
+            # post-filter to only report duplications involving changed files.
+            # Using --filelist would miss "changed file duplicates unchanged file" cases.
             # Build associative array for O(1) lookup instead of O(n×m) nested loop
             declare -A changed_set
             while IFS= read -r f; do
@@ -273,7 +291,7 @@ run_cpd() {
             done < "$filelist"
 
             local filtered_file
-            filtered_file=$(mktemp /tmp/cpd-filtered-XXXXXX.txt)
+            filtered_file=$(_tracked_mktemp /tmp/cpd-filtered-XXXXXX.txt)
             local in_block=0 block="" block_relevant=0
 
             while IFS= read -r line; do

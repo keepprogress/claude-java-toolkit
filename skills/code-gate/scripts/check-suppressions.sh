@@ -24,6 +24,14 @@ fi
 
 log() { echo "$1" >&2; }
 
+if [[ $# -lt 1 ]]; then
+    echo "Usage: check-suppressions.sh <module> [project_root] [filelist]" >&2
+    echo "  module:       module directory name, or '.' for single-module projects" >&2
+    echo "  project_root: project root directory (default: '.')" >&2
+    echo "  filelist:     file list for incremental mode (optional)" >&2
+    exit 1
+fi
+
 MODULE="$1"
 PROJECT_ROOT="${2:-.}"
 FILELIST="${3:-}"
@@ -115,10 +123,13 @@ fi
 # ------------------------------------------------------------------
 log "  [2/3] @SuppressWarnings(\"all\") bypasses..."
 
+# Match: @SuppressWarnings("all"), @SuppressWarnings({"all"}), @SuppressWarnings(value="all")
+SW_ALL_PATTERN='SuppressWarnings.*[("{\s]all["})]'
+
 if [[ $INCREMENTAL -eq 1 ]]; then
     while IFS= read -r file; do
         [[ -f "$file" ]] || continue
-        if grep -q 'SuppressWarnings("all"' "$file" 2>/dev/null; then
+        if grep -qE "$SW_ALL_PATTERN" "$file" 2>/dev/null; then
             rel="${file#$MODULE_DIR/}"
             violations+=("$rel: SuppressWarnings(\"all\") bypass")
         fi
@@ -127,26 +138,32 @@ else
     while IFS= read -r file; do
         rel="${file#$MODULE_DIR/}"
         violations+=("$rel: SuppressWarnings(\"all\") bypass")
-    done < <(grep -rl 'SuppressWarnings("all"' "$SRC_DIR" 2>/dev/null || true)
+    done < <(grep -rlE "$SW_ALL_PATTERN" "$SRC_DIR" 2>/dev/null || true)
 fi
 
 # ------------------------------------------------------------------
 # Check 3: @SuppressWarnings("PMD")
 # ------------------------------------------------------------------
-log "  [3/3] @SuppressWarnings(\"PMD\") bypasses..."
+# @SuppressWarnings("PMD") = blanket suppress (report as violation)
+# @SuppressWarnings("PMD.SpecificRule") = targeted suppress (acceptable, not reported)
+log "  [3/3] @SuppressWarnings(\"PMD\") blanket bypasses..."
 
 if [[ $INCREMENTAL -eq 1 ]]; then
     while IFS= read -r file; do
         [[ -f "$file" ]] || continue
+        # Match "PMD" but NOT "PMD.Something" (targeted suppress is acceptable)
         if grep -q 'SuppressWarnings("PMD")' "$file" 2>/dev/null; then
             rel="${file#$MODULE_DIR/}"
-            violations+=("$rel: SuppressWarnings(\"PMD\") bypass")
+            violations+=("$rel: SuppressWarnings(\"PMD\") blanket bypass")
         fi
     done < "$FILELIST"
 else
     while IFS= read -r file; do
-        rel="${file#$MODULE_DIR/}"
-        violations+=("$rel: SuppressWarnings(\"PMD\") bypass")
+        # Only flag files with blanket "PMD" suppress, not targeted "PMD.RuleName"
+        if grep -q 'SuppressWarnings("PMD")' "$file" 2>/dev/null; then
+            rel="${file#$MODULE_DIR/}"
+            violations+=("$rel: SuppressWarnings(\"PMD\") blanket bypass")
+        fi
     done < <(grep -rl 'SuppressWarnings("PMD"' "$SRC_DIR" 2>/dev/null || true)
 fi
 

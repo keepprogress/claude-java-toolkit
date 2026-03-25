@@ -211,10 +211,24 @@ Only offer Phase 2 if Phase 1 passes clean AND the detect-env JSON showed `maven
 Ask user before proceeding.
 
 ```bash
-# Auto-discover ArchUnit test classes
-ARCH_TESTS=$(find "$MODULE/src/test/java" -name '*ArchRule*Test*.java' -o -name '*LintSuppression*Test*.java' 2>/dev/null \
+# Auto-discover ArchUnit test classes (common naming conventions)
+ARCH_TESTS=$(find "$MODULE/src/test/java" \( \
+    -name '*ArchRule*Test*.java' \
+    -o -name '*ArchitectureTest*.java' \
+    -o -name '*ArchTest*.java' \
+    -o -name '*LayerTest*.java' \
+    -o -name '*LintSuppression*Test*.java' \
+  \) 2>/dev/null \
   | sed 's|.*/src/test/java/||; s|\.java$||; s|/|.|g' \
   | paste -sd,)
+
+# Fallback: search for @ArchTest annotation or ArchUnit imports
+if [[ -z "$ARCH_TESTS" ]]; then
+    ARCH_TESTS=$(grep -rl 'com.tngtech.archunit\|@ArchTest' \
+        "$MODULE/src/test/java" 2>/dev/null \
+      | sed 's|.*/src/test/java/||; s|\.java$||; s|/|.|g' \
+      | paste -sd,)
+fi
 
 if [[ -n "$ARCH_TESTS" ]]; then
     mvn test -pl "$MODULE" -Dtest="$ARCH_TESTS"
