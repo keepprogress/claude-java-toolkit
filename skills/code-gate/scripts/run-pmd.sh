@@ -9,6 +9,9 @@
 #
 # PMD 版本相容性：支援 PMD 6.x 和 7.x，根據 major version 自動分流 CLI 語法。
 #
+# Exit code 語義:
+#   0 = 成功輸出結果（pass/fail/skip 均透過 JSON status 傳遞）
+#   1 = 腳本本身 crash 或前置條件不滿足
 # 輸出協定:
 #   stderr → debug / progress 訊息
 #   stdout → violation 明細（供 Claude auto-fix）+ ---CODE_GATE_RESULT--- JSON summary
@@ -220,14 +223,14 @@ run_pmd() {
         rm -f "$report_file"
         echo "---CODE_GATE_RESULT---"
         echo "{\"tool\":\"pmd\",\"status\":\"fail\",\"violations\":$count,\"files_checked\":$file_count,\"engine\":\"$PMD_ENGINE_VERSION\",\"ruleset_type\":\"$ruleset_type\"}"
-        return 4
+        return 0
     else
         echo "ERROR: PMD exited with code $exit_code" >&2
         cat "$report_file" >&2 2>/dev/null
         rm -f "$report_file"
         echo "---CODE_GATE_RESULT---"
         echo "{\"tool\":\"pmd\",\"status\":\"error\",\"exit_code\":$exit_code}"
-        return "$exit_code"
+        return 1
     fi
 }
 
@@ -340,13 +343,13 @@ run_cpd() {
             echo "---CODE_GATE_RESULT---"
             echo "{\"tool\":\"cpd\",\"status\":\"fail\",\"duplications\":$count,\"mode\":\"full\"}"
         fi
-        return 4
+        return 0
     else
         echo "ERROR: CPD exited with code $exit_code" >&2
         cat "$report_file" >&2 2>/dev/null
         rm -f "$report_file"
         echo "---CODE_GATE_RESULT---"
         echo "{\"tool\":\"cpd\",\"status\":\"error\",\"exit_code\":$exit_code}"
-        return "$exit_code"
+        return 1
     fi
 }

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # check-suppressions.sh — grep 版 suppression guard
 # 用法: bash check-suppressions.sh <module> [project_root] [filelist]
-# 結束碼: 0=pass, 1=violations found
+# 結束碼: 0=成功輸出結果（pass/fail/skip 透過 JSON status 傳遞）, 1=腳本 crash
 #
 # module:  模組名或 "." (單模組)
 # filelist: 增量模式檔案清單。不提供 = 全量掃描。
@@ -183,5 +183,5 @@ else
     done
     echo "---CODE_GATE_RESULT---"
     echo "{\"tool\":\"suppressions\",\"status\":\"fail\",\"violations\":${#violations[@]}}"
-    exit 1
+    exit 0
 fi
