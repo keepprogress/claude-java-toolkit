@@ -1,0 +1,18 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "claude-java-toolkit",
+  "description": "Development tools for Java / Spring Boot / Maven projects",
+  "owner": {
+    "name": "keepprogress"
+  },
+  "plugins": [
+    {
+      "name": "claude-java-toolkit",
+      "description": "Development tools for Java / Spring Boot / Maven projects — lint gate, code quality checks, and CI alignment utilities",
+      "version": "0.1.0",
+      "source": "./",
+      "category": "development",
+      "homepage": "https://github.com/keepprogress/claude-java-toolkit"
+    }
+  ]
+}
