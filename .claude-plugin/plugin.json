@@ -1,8 +1,16 @@
 {
   "name": "claude-java-toolkit",
-  "description": "Development tools for Java / Spring Boot / Maven projects — lint gate, code quality checks, and CI alignment utilities",
-  "version": "0.1.0",
+  "description": "Development tools for Java / Spring Boot / Maven projects — code quality gate, PMD/CPD analysis, and CI alignment utilities",
+  "version": "0.2.0",
+  "license": "MIT",
   "author": {
-    "name": "T3261"
-  }
+    "name": "keepprogress"
+  },
+  "keywords": ["java", "pmd", "cpd", "code-quality", "spring-boot", "maven", "lint"],
+  "skills": ["code-gate"],
+  "runtime": {
+    "java": ">=17",
+    "bash": ">=4"
+  },
+  "repository": "https://github.com/keepprogress/claude-java-toolkit"
 }

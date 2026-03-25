@@ -38,11 +38,18 @@ Violation details above the marker are for auto-fix analysis.
 
 ## Arguments
 
-`$ARGUMENTS` = `[module] [--full] [--report-only]`
+`$ARGUMENTS` = `[module] [--full] [--report-only] [--include-tests] [--all]`
 
 - **module** (optional): Module directory name, or `.` for single-module projects. Default: auto-detect.
 - **--full** (optional): Scan entire module instead of only branch-changed files.
 - **--report-only** (optional): Only report violations, do NOT auto-fix anything.
+- **--include-tests** (optional): Also scan `src/test/java` in addition to `src/main/java`.
+- **--all** (optional): Run on all modules with changed files (multi-module projects).
+
+When `--include-tests` is specified, set env var before calling scripts:
+```bash
+export CODE_GATE_INCLUDE_TESTS=true
+```
 
 ### Mode Matrix
 
@@ -52,6 +59,7 @@ Violation details above the marker are for auto-fix analysis.
 | **Full** (`--full`) | Entire `src/main/java` | Import + PMD safe fixes | 全模組健檢 |
 | **Report-only** (`--report-only`) | Branch-changed files | None | 只想看問題 |
 | **Full + Report-only** | Entire `src/main/java` | None | CI gate / audit |
+| **Include tests** (`--include-tests`) | + `src/test/java` | Same as mode | 測試程式碼也要掃 |
 
 ## Phase 0 — Environment Setup + Module Detection
 
@@ -89,7 +97,10 @@ CHANGED_MODULES=$(git diff --name-only "$(git merge-base "$BASE_BRANCH" HEAD)" -
   | cut -d/ -f1 | sort -u)
 ```
 
-If multiple modules detected, list them and ask the user which one to check.
+If `--all` is specified, run Phase 1 on **each module** in `CHANGED_MODULES` sequentially,
+collecting results into a combined summary table.
+
+If multiple modules detected (without `--all`), list them and ask the user which one to check.
 If a single module is found, use it automatically.
 
 ### Step 3: Generate changed file list (incremental mode)

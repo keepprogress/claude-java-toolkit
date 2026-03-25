@@ -60,16 +60,24 @@ _load_versions() {
     PMD_DIR="$pmd_dir"
 }
 
-# Resolve source dir: module can be "." for single-module projects
+# Resolve source dir(s): module can be "." for single-module projects
+# If CODE_GATE_INCLUDE_TESTS=true, also includes src/test/java
 _resolve_src_dir() {
     local module="$1"
     local project_root="$2"
+    local base
 
     if [[ "$module" == "." ]]; then
-        echo "$project_root/src/main/java"
+        base="$project_root"
     else
-        echo "$project_root/$module/src/main/java"
+        base="$project_root/$module"
     fi
+
+    local dirs="$base/src/main/java"
+    if [[ "${CODE_GATE_INCLUDE_TESTS:-false}" == "true" && -d "$base/src/test/java" ]]; then
+        dirs="$dirs,$base/src/test/java"
+    fi
+    echo "$dirs"
 }
 
 # Resolve ruleset: project file > PMD built-in categories

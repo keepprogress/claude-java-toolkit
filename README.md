@@ -119,6 +119,16 @@ cp -r ~/.claude/plugins/claude-java-toolkit/.claude-plugin \
 
 # 只報告不修復
 /claude-java-toolkit:code-gate --report-only
+
+# 包含測試程式碼
+/claude-java-toolkit:code-gate --include-tests
+
+# 掃描所有有變更的模組
+/claude-java-toolkit:code-gate --all
+
+# 生成 suppression allowlist（用於舊專案 baseline）
+bash ~/.claude/plugins/claude-java-toolkit/skills/code-gate/scripts/check-suppressions.sh \
+  --generate-allowlist . > src/test/resources/lint-suppression-allowlist.txt
 ```
 
 ### 適用場景
@@ -126,6 +136,7 @@ cp -r ~/.claude/plugins/claude-java-toolkit/.claude-plugin \
 - **Commit 前自檢** — 預設增量模式，秒級完成
 - **新專案評估** — `--full --report-only` 快速看弱點，決定導入什麼工具
 - **CI gate 對齊** — 有 `pom.xml` 時自動對齊 CI 的 PMD 版本和規則
+- **舊專案導入** — `--generate-allowlist` 建立 baseline，逐步改善
 
 ---
 

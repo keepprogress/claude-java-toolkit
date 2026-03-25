@@ -2,6 +2,27 @@
 
 Claude reads this file to decide how to auto-fix PMD violations.
 
+## Contributing New Rules
+
+Each rule entry must include:
+
+**For auto-fixable rules:**
+- `### RuleName` — exact PMD rule name
+- `Pattern:` — code pattern that triggers the violation
+- `Fix:` — transformation to apply
+- Code example with `// Before` and `// After`
+- `IMPORTANT:` / `NOTE:` — edge cases where the fix should NOT be applied (e.g., side effects, special contexts)
+- If the class might already use Lombok `@Slf4j` or have an existing logger, note how to handle
+
+**For non-auto-fixable rules:**
+- `### RuleName` — exact PMD rule name
+- `WHY:` — why auto-fix is unsafe (e.g., requires human judgement, side effects, domain knowledge)
+- `REPORT:` — what information to show the user
+
+**Decision criteria:** A rule is auto-fixable only if the transformation is **semantically equivalent** in all cases. If there is any scenario where the fix changes runtime behavior, mark it as not auto-fixable.
+
+---
+
 ## Auto-fixable (Claude applies directly)
 
 ### NoLoggerStringConcatenation
@@ -56,6 +77,7 @@ logger.debug("debug: {}", value);
 ```
 
 NOTE: Skip if inside `public static void main(String[] args)` — allowed by rule.
+NOTE: If the class already has `@Slf4j` (Lombok) or an existing `Logger` field, do NOT add a duplicate logger field.
 
 ## Not auto-fixable (report to user)
 
