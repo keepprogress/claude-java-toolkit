@@ -14,7 +14,8 @@ Pre-commit code quality gate with auto-fix capability. Two-phase progressive app
 fast standalone checks first, optional Maven-based ArchUnit second.
 
 Works on any Java project. If `pom.xml` exists, automatically aligns PMD version with CI.
-If not, uses PMD built-in rulesets for quick vulnerability scanning.
+If not (including Gradle projects), uses PMD built-in rulesets with default settings.
+Gradle projects are fully supported for scanning but PMD version auto-alignment is Maven-only.
 
 ## Output Protocol
 
@@ -180,6 +181,10 @@ run_cpd "$MODULE" "." "$FILELIST"
 ```
 
 Parse the JSON result. Report duplications. Do NOT auto-fix.
+
+> **Note**: CPD always scans the full `src/main/java` directory even in incremental mode,
+> because cross-file duplication detection requires full source context.
+> The output is then post-filtered to only report duplications involving changed files.
 
 ### Step 4: Suppression Guard (grep-based)
 

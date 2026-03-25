@@ -59,49 +59,15 @@ Pre-commit 程式碼品質關卡，兩階段漸進式檢查：
 
 重啟 Claude Code。
 
-### 方法二：手動安裝
+### 方法二：一鍵安裝腳本
 
-**1. Clone**
 ```bash
-cd ~/.claude/plugins
-git clone https://github.com/keepprogress/claude-java-toolkit.git
+curl -fsSL https://raw.githubusercontent.com/keepprogress/claude-java-toolkit/master/install.sh | bash
 ```
 
-**2. 建立 cache 副本**
-```bash
-mkdir -p ~/.claude/plugins/cache/claude-java-toolkit/claude-java-toolkit/0.1.0
-cp -r ~/.claude/plugins/claude-java-toolkit/.claude-plugin \
-      ~/.claude/plugins/claude-java-toolkit/skills \
-      ~/.claude/plugins/cache/claude-java-toolkit/claude-java-toolkit/0.1.0/
-```
+自動完成 clone、cache 建立、註冊、啟用。完成後重啟 Claude Code。
 
-**3. 註冊到 `installed_plugins.json`**
-
-編輯 `~/.claude/plugins/installed_plugins.json`，在 `"plugins"` 內加入：
-
-```json
-"claude-java-toolkit@claude-java-toolkit": [
-  {
-    "scope": "user",
-    "installPath": "YOUR_HOME/.claude/plugins/cache/claude-java-toolkit/claude-java-toolkit/0.1.0",
-    "version": "0.1.0",
-    "installedAt": "2026-03-25T00:00:00.000Z",
-    "lastUpdated": "2026-03-25T00:00:00.000Z",
-    "gitCommitSha": "0000000"
-  }
-]
-```
-
-> `YOUR_HOME` 替換為家目錄完整路徑。
-
-**4. 啟用**
-
-編輯 `~/.claude/settings.json`，加入：
-```json
-"claude-java-toolkit@claude-java-toolkit": true
-```
-
-**5. 重啟 Claude Code**
+移除：`bash ~/.claude/plugins/claude-java-toolkit/install.sh --uninstall`
 
 ---
 

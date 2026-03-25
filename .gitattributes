@@ -1,0 +1,12 @@
+# Ensure shell scripts always use LF line endings (prevents CRLF breakage on Windows)
+*.sh    text eol=lf
+*.bash  text eol=lf
+
+# Keep other text files platform-native
+*.md    text
+*.json  text
+*.xml   text
+*.java  text
+*.txt   text
+*.yml   text
+*.yaml  text

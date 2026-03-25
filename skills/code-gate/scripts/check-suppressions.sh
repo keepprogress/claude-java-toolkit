@@ -46,6 +46,13 @@ MODULE="$1"
 PROJECT_ROOT="${2:-.}"
 FILELIST="${3:-}"
 
+if [[ ! -d "$PROJECT_ROOT" ]]; then
+    echo "ERROR: Project root does not exist: $PROJECT_ROOT" >&2
+    echo "  hint: Check the path for typos. Current directory is: $(pwd)" >&2
+    echo "---CODE_GATE_RESULT---"
+    echo "{\"tool\":\"suppressions\",\"status\":\"error\",\"message\":\"project root not found: $PROJECT_ROOT\"}"
+    exit 1
+fi
 PROJECT_ROOT="$(cd "$PROJECT_ROOT" && pwd)"
 
 # Resolve source directory

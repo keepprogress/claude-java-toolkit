@@ -1,19 +1,19 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "claude-java-toolkit",
-  "description": "Development tools for Java / Spring Boot / Maven projects",
+  "description": "AI-powered pre-commit quality gate for Java — auto-fixes imports, detects PMD violations and copy-paste code. Zero config, aligns with your CI.",
   "owner": {
     "name": "keepprogress"
   },
   "plugins": [
     {
       "name": "claude-java-toolkit",
-      "description": "Development tools for Java / Spring Boot / Maven projects — code quality gate, PMD/CPD analysis, and CI alignment utilities",
+      "description": "AI-powered pre-commit quality gate for Java — auto-fixes imports, detects PMD violations and copy-paste code. Zero config, aligns with your CI.",
       "version": "0.2.0",
       "source": "./",
       "category": "development",
       "homepage": "https://github.com/keepprogress/claude-java-toolkit",
-      "keywords": ["java", "pmd", "cpd", "code-quality", "spring-boot", "maven"]
+      "keywords": ["java", "pmd", "cpd", "code-quality", "spring-boot", "maven", "lint", "auto-fix", "pre-commit", "static-analysis", "google-java-format"]
     }
   ]
 }

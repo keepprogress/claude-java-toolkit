@@ -20,6 +20,58 @@ ok()   { echo "[OK] $1" >&2; }
 warn() { echo "[WARN] $1" >&2; }
 fail() { echo "[FAIL] $1" >&2; }
 
+# Trap-based cleanup for interrupted downloads
+_detect_env_tmpfiles=()
+_detect_env_cleanup() { rm -f "${_detect_env_tmpfiles[@]}" 2>/dev/null; }
+trap _detect_env_cleanup EXIT INT TERM
+
+# SHA-256 checksum verification for supply chain security
+declare -A KNOWN_CHECKSUMS=(
+    # PMD 6.x
+    ["pmd-bin-6.55.0.zip"]="21acf96d43cb40d591cacccc1c20a66fc796eaddf69ea61812594447bac7a11d"
+    # PMD 7.x
+    ["pmd-dist-7.0.0-bin.zip"]="24be4bde2846cabea84e75e790ede1b86183f85f386cb120a41372f2b4844a54"
+    ["pmd-dist-7.8.0-bin.zip"]="d16077bb9aa471f78cda7a4f7ad84f163514b561316538e04d85157fee1fba10"
+    ["pmd-dist-7.9.0-bin.zip"]="dcb363fe20c2cc6faa700f3bf49034ef29b9a18f8892530d425a3f3b15eeea0d"
+    # google-java-format
+    ["google-java-format-1.24.0-all-deps.jar"]="812f805f58112460edf01bf202a8e61d0fd1f35c0d4fabd54220640776ec57a1"
+)
+
+_verify_checksum() {
+    local file="$1" filename="$2"
+    local expected="${KNOWN_CHECKSUMS[$filename]:-}"
+
+    if [[ "${CODE_GATE_SKIP_CHECKSUM:-false}" == "true" ]]; then
+        return 0
+    fi
+    if [[ -z "$expected" ]]; then
+        warn "No known checksum for $filename — skipping verification"
+        return 0
+    fi
+
+    local actual=""
+    if command -v sha256sum &>/dev/null; then
+        actual=$(sha256sum "$file" | cut -d' ' -f1)
+    elif command -v shasum &>/dev/null; then
+        actual=$(shasum -a 256 "$file" | cut -d' ' -f1)
+    else
+        warn "No sha256sum/shasum found — skipping checksum verification"
+        return 0
+    fi
+
+    if [[ "$actual" != "$expected" ]]; then
+        fail "Checksum mismatch for $filename"
+        fail "  Expected: $expected"
+        fail "  Got:      $actual"
+        fail "  The file may be corrupted or tampered with."
+        fail "  Set CODE_GATE_SKIP_CHECKSUM=true to bypass (not recommended)."
+        rm -f "$file"
+        return 1
+    fi
+    log "  Checksum verified: $filename"
+    return 0
+}
+
 errors=0
 JAVA_VERSION=""
 HAS_MAVEN=false
@@ -96,6 +148,7 @@ else
     fi
 
     local_zip="$TOOLS_DIR/${PMD_ZIP_NAME}"
+    _detect_env_tmpfiles+=("${local_zip}.tmp" "$local_zip")
     curl -fSL --connect-timeout 15 --retry 2 -o "${local_zip}.tmp" "$PMD_ZIP_URL" \
         && mv "${local_zip}.tmp" "$local_zip" || {
         fail "Failed to download PMD CLI from: $PMD_ZIP_URL"
@@ -106,18 +159,33 @@ else
     }
 
     if [[ -f "$local_zip" ]]; then
+        _verify_checksum "$local_zip" "$PMD_ZIP_NAME" || {
+            errors=$((errors + 1))
+        }
+    fi
+
+    if [[ -f "$local_zip" ]]; then
         if command -v unzip &>/dev/null; then
-            unzip -q -o "$local_zip" -d "$TOOLS_DIR"
+            unzip -q -o "$local_zip" -d "$TOOLS_DIR" || {
+                fail "Failed to extract PMD ZIP (unzip exit code: $?)"
+                fail "The downloaded file may be corrupted. Try: rm -rf $TOOLS_DIR/pmd-bin-*"
+                errors=$((errors + 1))
+            }
         else
-            (cd "$TOOLS_DIR" && jar xf "$local_zip")
+            (cd "$TOOLS_DIR" && jar xf "$local_zip") || {
+                fail "Failed to extract PMD ZIP via jar (exit code: $?)"
+                fail "Try: rm -rf $TOOLS_DIR/pmd-bin-*"
+                errors=$((errors + 1))
+            }
         fi
         rm -f "$local_zip"
 
-        if [[ -f "$PMD_RUN" ]]; then
+        if [[ $errors -eq 0 && -f "$PMD_RUN" ]]; then
             chmod +x "$PMD_RUN" 2>/dev/null || true
             ok "PMD CLI installed: $PMD_DIR (major=$PMD_MAJOR)"
-        else
-            fail "PMD CLI extraction failed — expected $PMD_RUN"
+        elif [[ $errors -eq 0 ]]; then
+            fail "PMD CLI extraction incomplete — expected $PMD_RUN"
+            fail "Try: rm -rf $PMD_DIR && re-run"
             errors=$((errors + 1))
         fi
     fi
@@ -144,6 +212,7 @@ else
     done
 
     GJF_URL="https://github.com/google/google-java-format/releases/download/v${GJF_VERSION}/google-java-format-${GJF_VERSION}-all-deps.jar"
+    _detect_env_tmpfiles+=("${GJF_JAR}.tmp")
     curl -fSL --connect-timeout 15 --retry 2 -o "${GJF_JAR}.tmp" "$GJF_URL" \
         && mv "${GJF_JAR}.tmp" "$GJF_JAR" || {
         fail "Failed to download google-java-format from: $GJF_URL"
@@ -153,6 +222,11 @@ else
         errors=$((errors + 1))
     }
 
+    if [[ -f "$GJF_JAR" ]]; then
+        _verify_checksum "$GJF_JAR" "google-java-format-${GJF_VERSION}-all-deps.jar" || {
+            errors=$((errors + 1))
+        }
+    fi
     [[ -f "$GJF_JAR" ]] && ok "google-java-format installed: $GJF_JAR"
 fi
 
@@ -169,6 +243,7 @@ export PMD_RUN="$PMD_RUN"
 export PMD_DIR="$PMD_DIR"
 export PMD_MAJOR="$PMD_MAJOR"
 ENVEOF
+    chmod 600 "$ENV_FILE" 2>/dev/null || true
     ok "Environment ready."
 
     # Structured output for Claude

@@ -50,6 +50,13 @@ _load_versions() {
     MINIMUM_TOKENS=$(grep '^minimumTokens=' "$VERSIONS_FILE" | cut -d= -f2)
     RULESET_PATH=$(grep '^ruleset=' "$VERSIONS_FILE" | cut -d= -f2 || true)
 
+    # Validate cache integrity — corrupt/empty values cause cryptic errors downstream
+    if [[ -z "$PMD_ENGINE_VERSION" || ! "$PMD_ENGINE_VERSION" =~ ^[0-9]+\. ]]; then
+        echo "ERROR: Corrupted cache — invalid PMD_ENGINE_VERSION='$PMD_ENGINE_VERSION' in $VERSIONS_FILE" >&2
+        echo "  help: Delete the cache and re-run: rm -f $VERSIONS_FILE" >&2
+        return 1
+    fi
+
     PMD_MAJOR="${PMD_ENGINE_VERSION%%.*}"
     local pmd_dir="$TOOLS_DIR/pmd-bin-${PMD_ENGINE_VERSION}"
     if [[ "$PMD_MAJOR" -ge 7 ]]; then
@@ -144,6 +151,10 @@ _exec_pmd() {
         fi
     fi
 
+    # Preserve warnings (deprecated rules, encoding issues) even on success
+    if [[ -s "$stderr_file" ]]; then
+        cat "$stderr_file" >&2
+    fi
     rm -f "$stderr_file"
     return $exit_code
 }
@@ -160,15 +171,24 @@ run_pmd() {
     ruleset=$(_resolve_ruleset "$project_root")
     # Include project root hash in cache key to prevent cross-project cache pollution
     local project_hash
-    project_hash=$(echo "$project_root" | md5sum 2>/dev/null | cut -c1-8 || echo "default")
+    # Cross-platform hash: md5sum (Linux) → md5 (macOS) → cksum (POSIX fallback)
+    if command -v md5sum &>/dev/null; then
+        project_hash=$(echo "$project_root" | md5sum | cut -c1-8)
+    elif command -v md5 &>/dev/null; then
+        project_hash=$(echo "$project_root" | md5 | cut -c1-8)
+    else
+        project_hash=$(echo "$project_root" | cksum | cut -d' ' -f1)
+    fi
     local cache_file="$TOOLS_DIR/pmd-cache-${project_hash}-${module//\//_}.bin"
     local ruleset_type="project"
     [[ "$ruleset" == category/* ]] && ruleset_type="built-in"
 
-    if [[ ! -d "$src_dir" ]]; then
-        echo "ERROR: Source directory not found: $src_dir" >&2
+    # Validate source directories (src_dir may be comma-separated when --include-tests)
+    local primary_dir="${src_dir%%,*}"
+    if [[ ! -d "$primary_dir" ]]; then
+        echo "ERROR: Source directory not found: $primary_dir" >&2
         echo "---CODE_GATE_RESULT---"
-        echo "{\"tool\":\"pmd\",\"status\":\"error\",\"exit_code\":1,\"message\":\"source directory not found\"}"
+        echo "{\"tool\":\"pmd\",\"status\":\"error\",\"exit_code\":1,\"message\":\"source directory not found: $primary_dir\"}"
         return 1
     fi
 
@@ -197,7 +217,7 @@ run_pmd() {
     fi
 
     local report_file
-    report_file=$(_tracked_mktemp /tmp/pmd-report-XXXXXX.txt)
+    report_file=$(_tracked_mktemp "${TMPDIR:-/tmp}/pmd-report-XXXXXX.txt")
 
     local exit_code=0
     if [[ -n "$filelist" ]]; then
@@ -224,7 +244,9 @@ run_pmd() {
         return 0
     elif [[ $exit_code -eq 4 ]]; then
         local count
-        count=$(wc -l < "$report_file")
+        # Count lines matching PMD text format (filepath:line: message) instead of raw wc -l
+        # to avoid overcounting from blank lines or multi-line output
+        count=$(grep -cE '^.+:[0-9]+:' "$report_file" 2>/dev/null || echo "0")
         log "PMD: $count violation(s) found."
         # Violation details on stdout for Claude to parse and auto-fix
         cat "$report_file"
@@ -251,10 +273,12 @@ run_cpd() {
     local src_dir
     src_dir=$(_resolve_src_dir "$module" "$project_root")
 
-    if [[ ! -d "$src_dir" ]]; then
-        echo "ERROR: Source directory not found: $src_dir" >&2
+    # Validate source directories (src_dir may be comma-separated when --include-tests)
+    local primary_dir="${src_dir%%,*}"
+    if [[ ! -d "$primary_dir" ]]; then
+        echo "ERROR: Source directory not found: $primary_dir" >&2
         echo "---CODE_GATE_RESULT---"
-        echo "{\"tool\":\"cpd\",\"status\":\"error\",\"exit_code\":1,\"message\":\"source directory not found\"}"
+        echo "{\"tool\":\"cpd\",\"status\":\"error\",\"exit_code\":1,\"message\":\"source directory not found: $primary_dir\"}"
         return 1
     fi
 
@@ -268,11 +292,11 @@ run_cpd() {
     [[ "$module" == "." ]] && label="(root)"
 
     local mode_label="full scan"
-    [[ -n "$filelist" ]] && mode_label="incremental"
+    [[ -n "$filelist" ]] && mode_label="full scan, filtered to changed files"
     log "Running CPD on $label — $mode_label (minimumTokens=$MINIMUM_TOKENS)..."
 
     local report_file
-    report_file=$(_tracked_mktemp /tmp/cpd-report-XXXXXX.txt)
+    report_file=$(_tracked_mktemp "${TMPDIR:-/tmp}/cpd-report-XXXXXX.txt")
 
     local exit_code=0
     _exec_pmd cpd \
@@ -302,7 +326,7 @@ run_cpd() {
             done < "$filelist"
 
             local filtered_file
-            filtered_file=$(_tracked_mktemp /tmp/cpd-filtered-XXXXXX.txt)
+            filtered_file=$(_tracked_mktemp "${TMPDIR:-/tmp}/cpd-filtered-XXXXXX.txt")
             local in_block=0 block="" block_relevant=0
 
             while IFS= read -r line; do
@@ -326,6 +350,8 @@ run_cpd() {
             if [[ $in_block -eq 1 && $block_relevant -eq 1 ]]; then
                 echo "$block" >> "$filtered_file"
             fi
+
+            unset changed_set
 
             if [[ -s "$filtered_file" ]]; then
                 local count

@@ -38,6 +38,10 @@ VEOF
 
     # ----------------------------------------------------------
     # Has pom.xml → try to read maven-pmd-plugin version
+    # Caveat: grep-based XML parsing is fragile — may miss versions
+    # in deeply nested configs or Maven property references.
+    # Deliberate trade-off to avoid XML parser dependency.
+    # On failure, falls back to DEFAULT_PMD_ENGINE safely.
     # ----------------------------------------------------------
     local plugin_version
     plugin_version=$(grep -A5 'maven-pmd-plugin' "$root_pom" \
@@ -113,8 +117,8 @@ VEOF
 
     local plugin_pom_url="https://repo1.maven.org/maven2/org/apache/maven/plugins/maven-pmd-plugin/${plugin_version}/maven-pmd-plugin-${plugin_version}.pom"
     local plugin_pom
-    plugin_pom=$(curl -fsSL "$plugin_pom_url" 2>/dev/null) || {
-        echo "WARN: Failed to fetch plugin POM — using default PMD $DEFAULT_PMD_ENGINE" >&2
+    plugin_pom=$(curl -fsSL --connect-timeout 10 --max-time 30 "$plugin_pom_url" 2>/dev/null) || {
+        echo "WARN: Failed to fetch plugin POM (timeout or network issue) — using default PMD $DEFAULT_PMD_ENGINE" >&2
         PMD_ENGINE_VERSION="$DEFAULT_PMD_ENGINE"
         MINIMUM_TOKENS="$min_tokens"
         RULESET_PATH="${ruleset:-}"
