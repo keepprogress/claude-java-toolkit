@@ -10,6 +10,10 @@
 #   1. CPD-OFF / NOPMD — comment-based suppressions
 #   2. @SuppressWarnings("all") — PMD framework-level bypass
 #   3. @SuppressWarnings("PMD") — suppresses all PMD rules
+#
+# 輸出協定:
+#   stderr → debug / progress 訊息
+#   stdout → violation 明細 + ---LINT_GATE_RESULT--- JSON summary
 
 set -euo pipefail
 
@@ -17,6 +21,8 @@ if [[ ${BASH_VERSINFO[0]} -lt 4 ]]; then
     echo "ERROR: bash 4+ required (current: $BASH_VERSION)" >&2
     exit 1
 fi
+
+log() { echo "$1" >&2; }
 
 MODULE="$1"
 PROJECT_ROOT="${2:-.}"
@@ -37,20 +43,23 @@ ALLOWLIST="$MODULE_DIR/src/test/resources/lint-suppression-allowlist.txt"
 
 if [[ ! -d "$SRC_DIR" ]]; then
     echo "ERROR: $SRC_DIR not found" >&2
+    echo "---LINT_GATE_RESULT---"
+    echo "{\"tool\":\"suppressions\",\"status\":\"error\",\"message\":\"source directory not found\"}"
     exit 1
 fi
 
 if [[ -n "$FILELIST" && ! -s "$FILELIST" ]]; then
-    echo "Suppression guard: SKIP (no changed files)"
+    echo "---LINT_GATE_RESULT---"
+    echo "{\"tool\":\"suppressions\",\"status\":\"skip\",\"violations\":0}"
     exit 0
 fi
 
 INCREMENTAL=0
 if [[ -n "$FILELIST" ]]; then
     INCREMENTAL=1
-    echo "Suppression guard: incremental mode ($(wc -l < "$FILELIST") changed files)"
+    log "Suppression guard: incremental mode ($(wc -l < "$FILELIST") changed files)"
 else
-    echo "Suppression guard: full scan"
+    log "Suppression guard: full scan"
 fi
 
 violations=()
@@ -58,7 +67,7 @@ violations=()
 # ------------------------------------------------------------------
 # Check 1: CPD-OFF / NOPMD
 # ------------------------------------------------------------------
-echo "  [1/3] CPD-OFF/NOPMD suppressions..."
+log "  [1/3] CPD-OFF/NOPMD suppressions..."
 
 if [[ $INCREMENTAL -eq 1 ]]; then
     while IFS= read -r file; do
@@ -98,13 +107,13 @@ elif [[ -f "$ALLOWLIST" ]]; then
         fi
     done
 else
-    echo "    (no allowlist found — skipping count check)"
+    log "    (no allowlist found — skipping count check)"
 fi
 
 # ------------------------------------------------------------------
 # Check 2: @SuppressWarnings("all")
 # ------------------------------------------------------------------
-echo "  [2/3] @SuppressWarnings(\"all\") bypasses..."
+log "  [2/3] @SuppressWarnings(\"all\") bypasses..."
 
 if [[ $INCREMENTAL -eq 1 ]]; then
     while IFS= read -r file; do
@@ -124,7 +133,7 @@ fi
 # ------------------------------------------------------------------
 # Check 3: @SuppressWarnings("PMD")
 # ------------------------------------------------------------------
-echo "  [3/3] @SuppressWarnings(\"PMD\") bypasses..."
+log "  [3/3] @SuppressWarnings(\"PMD\") bypasses..."
 
 if [[ $INCREMENTAL -eq 1 ]]; then
     while IFS= read -r file; do
@@ -142,16 +151,20 @@ else
 fi
 
 # ------------------------------------------------------------------
-# Report
+# Report — violation details on stdout, then JSON summary
 # ------------------------------------------------------------------
-echo ""
 if [[ ${#violations[@]} -eq 0 ]]; then
-    echo "Suppression guard: PASS"
+    log "Suppression guard: PASS"
+    echo "---LINT_GATE_RESULT---"
+    echo "{\"tool\":\"suppressions\",\"status\":\"pass\",\"violations\":0}"
     exit 0
 else
-    echo "Suppression guard: FAIL (${#violations[@]} violations)"
+    log "Suppression guard: FAIL (${#violations[@]} violations)"
+    # Violation details on stdout for Claude to read
     for v in "${violations[@]}"; do
         echo "  - $v"
     done
+    echo "---LINT_GATE_RESULT---"
+    echo "{\"tool\":\"suppressions\",\"status\":\"fail\",\"violations\":${#violations[@]}}"
     exit 1
 fi

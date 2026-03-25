@@ -9,11 +9,17 @@
 #
 # PMD 版本相容性：目前語法為 PMD 6.x。
 # PMD 7.x CLI 語法不同（pmd check --dir），升級時需依 major version 分流。
+#
+# 輸出協定:
+#   stderr → debug / progress 訊息
+#   stdout → violation 明細（供 Claude auto-fix）+ ---LINT_GATE_RESULT--- JSON summary
 
 set -euo pipefail
 
 TOOLS_DIR="$HOME/.claude/tools"
-VERSIONS_FILE="$TOOLS_DIR/lint-gate-versions.txt"
+VERSIONS_FILE="$TOOLS_DIR/code-gate-versions.txt"
+
+log() { echo "$1" >&2; }
 
 _load_versions() {
     if [[ ! -f "$VERSIONS_FILE" ]]; then
@@ -69,7 +75,7 @@ _exec_pmd() {
 
     if [[ $exit_code -ne 0 && $exit_code -ne 4 ]]; then
         cat "$stderr_file" >&2
-        echo "  (run.sh failed with $exit_code, trying java -cp fallback...)" >&2
+        log "  (run.sh failed with $exit_code, trying java -cp fallback...)"
 
         local main_class
         case "$tool" in
@@ -101,32 +107,38 @@ run_pmd() {
     local ruleset
     ruleset=$(_resolve_ruleset "$project_root")
     local cache_file="$TOOLS_DIR/pmd-cache-${module//\//_}.bin"
+    local ruleset_type="project"
+    [[ "$ruleset" == category/* ]] && ruleset_type="built-in"
 
     if [[ ! -d "$src_dir" ]]; then
         echo "ERROR: Source directory not found: $src_dir" >&2
+        echo "---LINT_GATE_RESULT---"
+        echo "{\"tool\":\"pmd\",\"status\":\"error\",\"exit_code\":1,\"message\":\"source directory not found\"}"
         return 1
     fi
 
     # Incremental: empty filelist = nothing to check
     if [[ -n "$filelist" && ! -s "$filelist" ]]; then
-        echo "PMD: No changed files to check (incremental mode)."
+        echo "---LINT_GATE_RESULT---"
+        echo "{\"tool\":\"pmd\",\"status\":\"skip\",\"violations\":0,\"files_checked\":0,\"engine\":\"$PMD_ENGINE_VERSION\",\"ruleset_type\":\"$ruleset_type\"}"
         return 0
     fi
 
     local label="$module"
     [[ "$module" == "." ]] && label="(root)"
+    local file_count=0
 
     if [[ -n "$filelist" ]]; then
-        echo "Running PMD on $label — $(wc -l < "$filelist") changed file(s) (engine=$PMD_ENGINE_VERSION)..."
+        file_count=$(wc -l < "$filelist")
+        log "Running PMD on $label — $file_count changed file(s) (engine=$PMD_ENGINE_VERSION)..."
     else
-        echo "Running PMD on $label — full scan (engine=$PMD_ENGINE_VERSION)..."
+        log "Running PMD on $label — full scan (engine=$PMD_ENGINE_VERSION)..."
     fi
 
-    # Show which ruleset is being used
-    if [[ "$ruleset" == category/* ]]; then
-        echo "  (Using PMD built-in rulesets — no project ruleset found)"
+    if [[ "$ruleset_type" == "built-in" ]]; then
+        log "  (Using PMD built-in rulesets — no project ruleset found)"
     else
-        echo "  (Ruleset: $ruleset)"
+        log "  (Ruleset: $ruleset)"
     fi
 
     local report_file
@@ -150,20 +162,27 @@ run_pmd() {
     fi
 
     if [[ $exit_code -eq 0 ]]; then
-        echo "PMD: No violations found."
+        log "PMD: No violations found."
         rm -f "$report_file"
+        echo "---LINT_GATE_RESULT---"
+        echo "{\"tool\":\"pmd\",\"status\":\"pass\",\"violations\":0,\"files_checked\":$file_count,\"engine\":\"$PMD_ENGINE_VERSION\",\"ruleset_type\":\"$ruleset_type\"}"
         return 0
     elif [[ $exit_code -eq 4 ]]; then
         local count
         count=$(wc -l < "$report_file")
-        echo "PMD: $count violation(s) found."
+        log "PMD: $count violation(s) found."
+        # Violation details on stdout for Claude to parse and auto-fix
         cat "$report_file"
         rm -f "$report_file"
+        echo "---LINT_GATE_RESULT---"
+        echo "{\"tool\":\"pmd\",\"status\":\"fail\",\"violations\":$count,\"files_checked\":$file_count,\"engine\":\"$PMD_ENGINE_VERSION\",\"ruleset_type\":\"$ruleset_type\"}"
         return 4
     else
         echo "ERROR: PMD exited with code $exit_code" >&2
-        cat "$report_file" 2>/dev/null
+        cat "$report_file" >&2 2>/dev/null
         rm -f "$report_file"
+        echo "---LINT_GATE_RESULT---"
+        echo "{\"tool\":\"pmd\",\"status\":\"error\",\"exit_code\":$exit_code}"
         return "$exit_code"
     fi
 }
@@ -179,11 +198,14 @@ run_cpd() {
 
     if [[ ! -d "$src_dir" ]]; then
         echo "ERROR: Source directory not found: $src_dir" >&2
+        echo "---LINT_GATE_RESULT---"
+        echo "{\"tool\":\"cpd\",\"status\":\"error\",\"exit_code\":1,\"message\":\"source directory not found\"}"
         return 1
     fi
 
     if [[ -n "$filelist" && ! -s "$filelist" ]]; then
-        echo "CPD: No changed files to check (incremental mode)."
+        echo "---LINT_GATE_RESULT---"
+        echo "{\"tool\":\"cpd\",\"status\":\"skip\",\"duplications\":0}"
         return 0
     fi
 
@@ -191,8 +213,8 @@ run_cpd() {
     [[ "$module" == "." ]] && label="(root)"
 
     local mode_label="full scan"
-    [[ -n "$filelist" ]] && mode_label="full scan, filtered to changed files"
-    echo "Running CPD on $label — $mode_label (minimumTokens=$MINIMUM_TOKENS)..."
+    [[ -n "$filelist" ]] && mode_label="incremental"
+    log "Running CPD on $label — $mode_label (minimumTokens=$MINIMUM_TOKENS)..."
 
     local report_file
     report_file=$(mktemp /tmp/cpd-report-XXXXXX.txt)
@@ -207,12 +229,20 @@ run_cpd() {
         > "$report_file" || exit_code=$?
 
     if [[ $exit_code -eq 0 ]]; then
-        echo "CPD: No duplications found."
+        log "CPD: No duplications found."
         rm -f "$report_file"
+        echo "---LINT_GATE_RESULT---"
+        echo "{\"tool\":\"cpd\",\"status\":\"pass\",\"duplications\":0}"
         return 0
     elif [[ $exit_code -eq 4 ]]; then
         if [[ -n "$filelist" ]]; then
-            # Incremental: filter output to only show duplications involving changed files
+            # Incremental: filter to only duplications involving changed files
+            # Build associative array for O(1) lookup instead of O(n×m) nested loop
+            declare -A changed_set
+            while IFS= read -r f; do
+                changed_set["$f"]=1
+            done < "$filelist"
+
             local filtered_file
             filtered_file=$(mktemp /tmp/cpd-filtered-XXXXXX.txt)
             local in_block=0 block="" block_relevant=0
@@ -227,12 +257,12 @@ run_cpd() {
                     in_block=1
                 elif [[ $in_block -eq 1 ]]; then
                     block="$block"$'\n'"$line"
-                    while IFS= read -r changed_file; do
-                        if [[ "$line" == *"$changed_file"* ]]; then
-                            block_relevant=1
-                            break
-                        fi
-                    done < "$filelist"
+                    # Extract file path from CPD output line and check against set
+                    local candidate
+                    candidate=$(echo "$line" | sed -n 's/.*Starting at line .* of \(.*\)/\1/p')
+                    if [[ -n "$candidate" && -n "${changed_set[$candidate]:-}" ]]; then
+                        block_relevant=1
+                    fi
                 fi
             done < "$report_file"
             if [[ $in_block -eq 1 && $block_relevant -eq 1 ]]; then
@@ -242,24 +272,34 @@ run_cpd() {
             if [[ -s "$filtered_file" ]]; then
                 local count
                 count=$(grep -c '^Found a' "$filtered_file" 2>/dev/null || echo "0")
-                echo "CPD: $count duplication(s) involving changed files."
+                log "CPD: $count duplication(s) involving changed files."
                 cat "$filtered_file"
+                rm -f "$filtered_file" "$report_file"
+                echo "---LINT_GATE_RESULT---"
+                echo "{\"tool\":\"cpd\",\"status\":\"fail\",\"duplications\":$count,\"mode\":\"incremental\"}"
             else
-                echo "CPD: Duplications exist but none involve changed files."
+                log "CPD: Duplications exist but none involve changed files."
+                rm -f "$filtered_file" "$report_file"
+                echo "---LINT_GATE_RESULT---"
+                echo "{\"tool\":\"cpd\",\"status\":\"pass\",\"duplications\":0,\"mode\":\"incremental\",\"note\":\"duplications exist outside changed files\"}"
+                return 0
             fi
-            rm -f "$filtered_file"
         else
             local count
             count=$(grep -c '^Found a' "$report_file" 2>/dev/null || echo "0")
-            echo "CPD: $count duplication(s) found."
+            log "CPD: $count duplication(s) found."
             cat "$report_file"
+            rm -f "$report_file"
+            echo "---LINT_GATE_RESULT---"
+            echo "{\"tool\":\"cpd\",\"status\":\"fail\",\"duplications\":$count,\"mode\":\"full\"}"
         fi
-        rm -f "$report_file"
         return 4
     else
         echo "ERROR: CPD exited with code $exit_code" >&2
-        cat "$report_file" 2>/dev/null
+        cat "$report_file" >&2 2>/dev/null
         rm -f "$report_file"
+        echo "---LINT_GATE_RESULT---"
+        echo "{\"tool\":\"cpd\",\"status\":\"error\",\"exit_code\":$exit_code}"
         return "$exit_code"
     fi
 }

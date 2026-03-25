@@ -6,7 +6,7 @@
 set -euo pipefail
 
 TOOLS_DIR="$HOME/.claude/tools"
-VERSIONS_FILE="$TOOLS_DIR/lint-gate-versions.txt"
+VERSIONS_FILE="$TOOLS_DIR/code-gate-versions.txt"
 
 # Defaults (PMD 6.55.0 = last stable 6.x)
 DEFAULT_PMD_ENGINE="6.55.0"

@@ -1,19 +1,38 @@
 ---
-name: lint-gate
+name: code-gate
 description: >
   Use when checking code quality before committing, when CI lint fails,
-  or when reviewing PMD/CPD/suppression violations on Java modules.
+  when reviewing PMD/CPD/suppression violations, or when detecting AI-generated
+  code quality issues (slop) on Java modules.
   Works on any Java project — with or without Maven/pom.xml.
 disable-model-invocation: true
 ---
 
-# Lint Gate Skill
+# Code Gate Skill
 
-Run project lint checks with auto-fix capability. Two-phase progressive approach:
+Pre-commit code quality gate with auto-fix capability. Two-phase progressive approach:
 fast standalone checks first, optional Maven-based ArchUnit second.
 
 Works on any Java project. If `pom.xml` exists, automatically aligns PMD version with CI.
 If not, uses PMD built-in rulesets for quick vulnerability scanning.
+
+## Output Protocol
+
+All scripts follow a unified output convention:
+- **stderr**: Debug and progress messages (informational only, not for parsing)
+- **stdout**: Violation details (if any) followed by a `---LINT_GATE_RESULT---` marker and a single-line JSON summary
+
+When running scripts, parse the JSON after `---LINT_GATE_RESULT---` to get structured results.
+Violation details above the marker are for auto-fix analysis.
+
+### Status values per tool
+
+| Tool | `status` values | Key fields |
+|------|----------------|------------|
+| `detect-env` | `ready`, `failed` | `java`, `maven`, `pmd_engine`, `first_run` |
+| `pmd` | `skip`, `pass`, `fail`, `error` | `violations`, `files_checked`, `engine` |
+| `cpd` | `skip`, `pass`, `fail`, `error` | `duplications`, `mode` |
+| `suppressions` | `skip`, `pass`, `fail`, `error` | `violations` |
 
 ## Arguments
 
@@ -36,14 +55,13 @@ If not, uses PMD built-in rulesets for quick vulnerability scanning.
 
 ### Step 1: Environment check
 
+If this is the first run (no `~/.claude/tools/code-gate-env.sh` exists), tell the user before running:
+> "首次執行需要下載 PMD CLI (~35MB) 和 google-java-format (~5MB)，大約需要 30 秒。"
+
 Run `${CLAUDE_SKILL_DIR}/scripts/detect-env.sh` to verify environment.
 
-The script will:
-1. Verify Java 17+ exists (required for PMD CLI + google-java-format)
-2. Resolve PMD version from `pom.xml` if available, otherwise use defaults
-3. Download PMD CLI and google-java-format to `~/.claude/tools/` if missing
-
-If any required step fails, report what's missing and stop.
+Parse the JSON result. If `status` is `"failed"`, report what's missing and stop.
+If `first_run` is `true`, briefly note that tools were downloaded successfully.
 
 ### Step 2: Detect module
 
@@ -81,14 +99,13 @@ else
     SRC_PREFIX="$MODULE/src/main/java/"
 fi
 
-FILELIST=$(mktemp /tmp/lint-gate-filelist-XXXXXX.txt)
+FILELIST=$(mktemp /tmp/code-gate-filelist-XXXXXX.txt)
 {
   git diff --name-only --diff-filter=ACMR "$(git merge-base master HEAD)" -- "$SRC_PREFIX"
   git ls-files --others --exclude-standard -- "$SRC_PREFIX"
 } | grep '\.java$' | sort -u > "$FILELIST"
 
 FILE_COUNT=$(wc -l < "$FILELIST")
-echo "Incremental mode: $FILE_COUNT changed file(s) to check."
 ```
 
 If `$FILE_COUNT` is 0, report "No changed Java files — nothing to lint." and stop.
@@ -101,7 +118,7 @@ If `--full`, set `FILELIST=""` (empty string) for full-scan mode.
 **If `--report-only`: SKIP this step entirely.**
 
 ```bash
-source "$HOME/.claude/tools/lint-gate-env.sh"
+source "$HOME/.claude/tools/code-gate-env.sh"
 
 if [[ -n "$FILELIST" && -s "$FILELIST" ]]; then
     xargs -r "$JAVA_GJF" -jar "$GJF_JAR" --fix-imports-only --replace < "$FILELIST"
@@ -125,8 +142,8 @@ source "${CLAUDE_SKILL_DIR}/scripts/run-pmd.sh"
 run_pmd "$MODULE" "." "$FILELIST"
 ```
 
-PMD uses the project's ruleset if found (`pmd-rules.xml`, `pmd-ruleset.xml`, or as specified in `pom.xml`).
-If no project ruleset exists, uses PMD built-in categories: `bestpractices`, `errorprone`, `codestyle`.
+Parse the JSON result after `---LINT_GATE_RESULT---`.
+Violation details (lines above the marker) are for auto-fix analysis.
 
 If violations found:
 
@@ -144,7 +161,7 @@ source "${CLAUDE_SKILL_DIR}/scripts/run-pmd.sh"
 run_cpd "$MODULE" "." "$FILELIST"
 ```
 
-Report duplications. Do NOT auto-fix.
+Parse the JSON result. Report duplications. Do NOT auto-fix.
 
 ### Step 4: Suppression Guard (grep-based)
 
@@ -152,23 +169,28 @@ Report duplications. Do NOT auto-fix.
 bash "${CLAUDE_SKILL_DIR}/scripts/check-suppressions.sh" "$MODULE" "." "$FILELIST"
 ```
 
-Checks what PMD XPath cannot:
+Parse the JSON result. Checks what PMD XPath cannot:
 1. `CPD-OFF` / `NOPMD` comments
 2. `@SuppressWarnings("all")`
 3. `@SuppressWarnings("PMD")`
 
 Do NOT auto-fix suppressions.
 
-### Phase 1 Summary
+### Phase 1 Summary — Presenting Results
 
-Report all results in a table:
+Collect JSON results from PMD, CPD, and Suppressions steps.
+For imports (no JSON), count modified files from the command output.
+Present a single summary table:
 
-| Check | Status | Auto-fixed | Remaining |
-|-------|--------|------------|-----------|
-| Imports | ... | N files | ... |
-| PMD | ... | N fixes | ... |
-| CPD | ... | — | N duplications |
-| Suppressions | ... | — | N mismatches |
+| Check | Status | Detail |
+|-------|--------|--------|
+| Imports | done/skip | N files fixed (count from command output) |
+| PMD | from JSON `status` | `violations` count (M auto-fixed if applicable) |
+| CPD | from JSON `status` | `duplications` count |
+| Suppressions | from JSON `status` | `violations` count |
+
+**If all checks pass:** Keep response to 2-3 lines. Do not elaborate.
+**If issues remain:** Show the table, then list only actionable items the user needs to address.
 
 ### Cleanup
 
@@ -178,9 +200,8 @@ Report all results in a table:
 
 ## Phase 2 — ArchUnit (optional, needs Maven)
 
-Only offer Phase 2 if Phase 1 passes clean. Ask user before proceeding.
-
-Requires: Maven + project compilable
+Only offer Phase 2 if Phase 1 passes clean AND the detect-env JSON showed `maven: true`.
+Ask user before proceeding.
 
 ```bash
 # Auto-discover ArchUnit test classes

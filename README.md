@@ -8,9 +8,9 @@ Java 專案的 Claude Code 開發工具 Plugin。
 
 ## 功能
 
-### lint-gate
+### code-gate
 
-兩階段漸進式 lint 檢查：
+Pre-commit 程式碼品質關卡，兩階段漸進式檢查：
 
 | 階段 | 內容 | 需要 Maven？ |
 |------|------|-------------|
@@ -102,16 +102,16 @@ cp -r ~/.claude/plugins/claude-java-toolkit/.claude-plugin \
 
 ```
 # 自動偵測模組，增量掃描 branch 變更
-/claude-java-toolkit:lint-gate
+/claude-java-toolkit:code-gate
 
 # 指定模組
-/claude-java-toolkit:lint-gate MyModule
+/claude-java-toolkit:code-gate MyModule
 
 # 全量掃描
-/claude-java-toolkit:lint-gate MyModule --full
+/claude-java-toolkit:code-gate MyModule --full
 
 # 只報告不修復
-/claude-java-toolkit:lint-gate --report-only
+/claude-java-toolkit:code-gate --report-only
 ```
 
 ### 適用場景
@@ -130,7 +130,7 @@ claude-java-toolkit/
 │   ├── plugin.json          ← Plugin manifest
 │   └── marketplace.json     ← Marketplace index
 ├── skills/
-│   └── lint-gate/
+│   └── code-gate/
 │       ├── SKILL.md             ← Skill 定義
 │       ├── scripts/
 │       │   ├── detect-env.sh        ← 環境偵測 + 工具下載
